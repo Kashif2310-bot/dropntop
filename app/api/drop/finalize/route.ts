@@ -4,22 +4,16 @@ import { headFile, deleteFile } from '@/lib/storage';
 import { getOrCreateDeviceId, hashDeviceGlobal, DEVICE_COOKIE_NAME } from '@/lib/device';
 import { recordUsage } from '@/lib/usage';
 
-// Step 2 of the direct-to-R2 upload flow — called once the browser has
-// finished PUTting every file straight to R2 (see /api/drop/presign). For
-// each file we confirm with R2 itself that the object really exists (never
-// trust that the browser's PUT actually succeeded) and record the actual
-// size R2 reports, not whatever the browser claimed before uploading.
-//
-// The sha256 for each file comes from the browser too (computed client-side
-// via the Web Crypto API before/while uploading) since this server never
-// sees the raw bytes on this path — that's the whole point. If any file
-// fails to confirm, the entire drop is torn down rather than left half-done,
-// so a code is never handed out for a drop with missing files.
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const dropId = body.dropId as string;
-    const files = (body.files || []) as { fileId: string; sha256: string }[];
+    const files = (body.files || []) as {
+      fileId: string;
+      sha256: string;
+      thumbnailUploaded?: boolean;
+      durationSeconds?: number;
+    }[];
 
     const drop = db.prepare('SELECT * FROM drops WHERE id = ?').get(dropId) as any;
     if (!drop) return NextResponse.json({ error: 'Drop not found' }, { status: 404 });
@@ -31,23 +25,29 @@ export async function POST(req: NextRequest) {
       const head = await headFile(dbFile.storage_path);
 
       if (!clientInfo || !head.exists) {
-        // Upload never completed for this file — tear the whole drop down
-        // rather than hand out a code for a drop missing a file.
         for (const f of dbFiles) {
           if (f.confirmed || f.id === dbFile.id) await deleteFile(f.storage_path).catch(() => {});
         }
-        db.prepare('DELETE FROM drops WHERE id = ?').run(dropId); // cascades files/retrievals
+        db.prepare('DELETE FROM drops WHERE id = ?').run(dropId);
         return NextResponse.json(
           { error: `Upload for "${dbFile.original_name}" did not complete — please try again` },
           { status: 400 }
         );
       }
 
-      db.prepare('UPDATE files SET sha256 = ?, size_bytes = ?, confirmed = 1 WHERE id = ?').run(
+      db.prepare('UPDATE files SET sha256 = ?, size_bytes = ?, confirmed = 1, duration_seconds = ? WHERE id = ?').run(
         clientInfo.sha256,
         head.sizeBytes ?? dbFile.size_bytes,
+        clientInfo.durationSeconds ?? null,
         dbFile.id
       );
+
+      if (dbFile.thumbnail_path && clientInfo.thumbnailUploaded) {
+        const thumbHead = await headFile(dbFile.thumbnail_path);
+        if (thumbHead.exists) {
+          db.prepare('UPDATE files SET has_thumbnail = 1 WHERE id = ?').run(dbFile.id);
+        }
+      }
     }
 
     const { deviceId, isNew } = getOrCreateDeviceId(req);

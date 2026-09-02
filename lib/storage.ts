@@ -4,14 +4,6 @@ import crypto from 'crypto';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-// Dual-mode storage: uses Cloudflare R2 (S3-compatible, zero egress fees,
-// redundant object storage — not a single disk that can get corrupted or
-// wiped on a restart) when R2_* env vars are set, and falls back to local
-// disk automatically when they're not, so local dev and a Railway deploy
-// without R2 configured keep working exactly as before. Every other file in
-// the app only ever calls saveFile/readFile/deleteFile — this is the only
-// file that needs to know which backend is actually in use.
-
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
@@ -53,19 +45,6 @@ export async function readFile(storagePath: string): Promise<Buffer> {
   return fs.readFileSync(storagePath);
 }
 
-/**
- * Returns a presigned URL the BROWSER can PUT a file to directly, bypassing
- * this server entirely for the actual bytes — this is what fixes the
- * upload-is-slow problem: without this, every file crosses the network
- * twice (browser -> Railway -> R2), and Railway buffers the whole file in
- * memory before forwarding it. With this, the file goes browser -> R2 in
- * one hop, straight to Cloudflare's network (which peers very well in
- * India), and Railway only ever handles small JSON requests.
- *
- * Returns null when R2 isn't configured (local-disk fallback) — callers
- * should fall back to the old buffered upload path in that case, since a
- * plain local dev server has nothing for the browser to PUT directly to.
- */
 export function isDirectUploadSupported(): boolean {
   return useR2;
 }
@@ -76,9 +55,6 @@ export async function getUploadUrl(key: string, expiresInSeconds = 900): Promise
   return getSignedUrl(s3, command, { expiresIn: expiresInSeconds });
 }
 
-/** Confirms an object actually landed in R2 after a direct browser upload,
- * and returns its real size — used by /api/drop/finalize instead of trusting
- * whatever size the client claimed before the upload happened. */
 export async function headFile(key: string): Promise<{ exists: boolean; sizeBytes?: number }> {
   if (!useR2 || !s3) return { exists: fs.existsSync(path.join(uploadsDir, key)) };
   try {
@@ -88,6 +64,43 @@ export async function headFile(key: string): Promise<{ exists: boolean; sizeByte
   } catch {
     return { exists: false };
   }
+}
+
+/**
+ * Returns a presigned URL the BROWSER can GET directly from R2, bypassing
+ * this server for the actual bytes — the download-side mirror of
+ * getUploadUrl() above. Without this, /api/retrieve/file would have to read
+ * the whole file into this server's memory before it could send a single
+ * byte back — fine for a few MB, but a 2GB video would try to allocate 2GB
+ * of RAM on a container with a fraction of that. With this, the browser
+ * downloads straight from Cloudflare's network and Railway never sees the
+ * bytes. `filename` sets Content-Disposition so the browser saves it under
+ * the original name. Returns null when R2 isn't configured — callers fall
+ * back to the buffered readFile() path (fine for local dev, small files).
+ */
+export async function getDownloadUrl(
+  key: string,
+  filename: string,
+  expiresInSeconds = 300
+): Promise<string | null> {
+  if (!useR2 || !s3) return null;
+  const command = new GetObjectCommand({
+    Bucket: R2_BUCKET_NAME,
+    Key: key,
+    ResponseContentDisposition: `attachment; filename="${encodeURIComponent(filename)}"`,
+  });
+  return getSignedUrl(s3, command, { expiresIn: expiresInSeconds });
+}
+
+/**
+ * Presigned GET for displaying an object inline (no Content-Disposition
+ * override, so the browser renders it — an <img> tag, not a download
+ * prompt). Used for gallery thumbnails.
+ */
+export async function getPreviewUrl(key: string, expiresInSeconds = 300): Promise<string | null> {
+  if (!useR2 || !s3) return null;
+  const command = new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key });
+  return getSignedUrl(s3, command, { expiresIn: expiresInSeconds });
 }
 
 export async function deleteFile(storagePath: string) {

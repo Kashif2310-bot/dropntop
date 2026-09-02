@@ -2,15 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import db from '@/lib/db';
 import { normalizeCode } from '@/lib/code';
-import { readFile } from '@/lib/storage';
+import { readFile, getDownloadUrl } from '@/lib/storage';
 import { getOrCreateDeviceId, hashDevice, hashDeviceGlobal, DEVICE_COOKIE_NAME } from '@/lib/device';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { recordUsage } from '@/lib/usage';
 
-// Streams the actual file bytes back, verified against the sha256 recorded at
-// upload time so the response can carry an integrity header. This is what
-// "zero quality loss" means in practice: we never touch the bytes after
-// saveFile() writes them, and we prove it on the way out.
 export async function GET(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for') || 'unknown';
   const rl = checkRateLimit(`download:${ip}`);
@@ -53,6 +49,26 @@ export async function GET(req: NextRequest) {
     recordUsage(hashDeviceGlobal(deviceId), 'retrieve');
   }
 
+  // On R2, redirect the browser straight to Cloudflare instead of buffering
+  // the whole file into this server's memory first — essential once files
+  // can be gigabytes.
+  const directUrl = await getDownloadUrl(file.storage_path, file.original_name);
+
+  if (directUrl) {
+    const res = NextResponse.redirect(directUrl, { status: 302 });
+    res.headers.set('X-Checksum-SHA256', file.sha256);
+    if (isNew) {
+      res.cookies.set(DEVICE_COOKIE_NAME, deviceId, {
+        httpOnly: true,
+        sameSite: 'lax',
+        maxAge: 60 * 60 * 24 * 30,
+      });
+    }
+    return res;
+  }
+
+  // Local-disk fallback (dev only, in practice — Railway always has R2
+  // configured).
   const buffer = await readFile(file.storage_path);
   const verifySha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 

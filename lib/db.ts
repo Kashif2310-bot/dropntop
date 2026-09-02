@@ -51,7 +51,10 @@ CREATE TABLE IF NOT EXISTS files (
   -- 1 in /api/drop/finalize once R2 confirms the object really exists. A row
   -- that never gets confirmed (tab closed mid-upload) is what
   -- lib/cleanup.ts's abandoned-upload sweep purges.
-  confirmed INTEGER NOT NULL DEFAULT 1
+  confirmed INTEGER NOT NULL DEFAULT 1,
+  thumbnail_path TEXT,
+  has_thumbnail INTEGER NOT NULL DEFAULT 0,
+  duration_seconds REAL
 );
 
 CREATE TABLE IF NOT EXISTS retrievals (
@@ -143,5 +146,11 @@ addColumnIfMissing(
 // Same idempotent pattern for the confirmed flag on files (see the comment
 // on that column above) — existing databases predate direct-to-R2 uploads.
 addColumnIfMissing('files', 'confirmed', 'ALTER TABLE files ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 1');
+
+// Same pattern again for the gallery-preview columns — existing databases
+// predate thumbnail support.
+addColumnIfMissing('files', 'thumbnail_path', 'ALTER TABLE files ADD COLUMN thumbnail_path TEXT');
+addColumnIfMissing('files', 'has_thumbnail', 'ALTER TABLE files ADD COLUMN has_thumbnail INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('files', 'duration_seconds', 'ALTER TABLE files ADD COLUMN duration_seconds REAL');
 
 export default db;

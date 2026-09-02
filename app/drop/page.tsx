@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react';
 import UpgradeCard from '@/app/components/UpgradeCard';
+import { generateImageThumbnail, generateVideoThumbnail } from '@/lib/thumbnail';
 
 export default function DropPage() {
   const [files, setFiles] = useState<File[]>([]);
@@ -17,9 +18,6 @@ export default function DropPage() {
     setFiles(Array.from(list));
   }
 
-  // Computes SHA-256 in the browser (Web Crypto) — needed because on the
-  // direct-to-R2 path (see below) this server never sees the raw bytes, so
-  // it can't compute the checksum itself the way the old buffered path did.
   async function sha256Hex(file: File): Promise<string> {
     const buf = await file.arrayBuffer();
     const hashBuf = await crypto.subtle.digest('SHA-256', buf);
@@ -45,10 +43,6 @@ export default function DropPage() {
     setError('');
     setLoading(true);
     try {
-      // Try the direct-to-R2 path first — the browser uploads straight to
-      // Cloudflare, skipping the slow browser->Railway->R2 double hop. Falls
-      // back automatically to the old server-buffered path (handleSubmitLegacy)
-      // when R2 isn't configured, e.g. local dev, or for note-only drops.
       const presignRes = await fetch('/api/drop/presign', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -68,17 +62,46 @@ export default function DropPage() {
       }
 
       // Upload every file straight to R2, in parallel, hashing each one as
-      // we go so we have the checksum ready for finalize.
+      // we go. Image/video files also get a small preview thumbnail
+      // generated right here in the browser and uploaded alongside the
+      // original — see lib/thumbnail.ts.
       const finalizeFiles = await Promise.all(
-        presignData.uploads.map(async (u: { fileId: string; uploadUrl: string }, i: number) => {
-          const file = files[i];
-          const [sha256, putRes] = await Promise.all([
-            sha256Hex(file),
-            fetch(u.uploadUrl, { method: 'PUT', body: file }),
-          ]);
-          if (!putRes.ok) throw new Error(`Upload failed for ${file.name}`);
-          return { fileId: u.fileId, sha256 };
-        })
+        presignData.uploads.map(
+          async (u: { fileId: string; uploadUrl: string; thumbnailUploadUrl?: string | null }, i: number) => {
+            const file = files[i];
+            const [sha256, putRes] = await Promise.all([
+              sha256Hex(file),
+              fetch(u.uploadUrl, { method: 'PUT', body: file }),
+            ]);
+            if (!putRes.ok) throw new Error(`Upload failed for ${file.name}`);
+
+            let thumbnailUploaded = false;
+            let durationSeconds: number | undefined;
+
+            if (u.thumbnailUploadUrl) {
+              try {
+                if (file.type.startsWith('video/')) {
+                  const { blob, durationSeconds: dur } = await generateVideoThumbnail(file);
+                  if (blob) {
+                    const thumbRes = await fetch(u.thumbnailUploadUrl, { method: 'PUT', body: blob });
+                    thumbnailUploaded = thumbRes.ok;
+                  }
+                  durationSeconds = dur ?? undefined;
+                } else if (file.type.startsWith('image/')) {
+                  const blob = await generateImageThumbnail(file);
+                  if (blob) {
+                    const thumbRes = await fetch(u.thumbnailUploadUrl, { method: 'PUT', body: blob });
+                    thumbnailUploaded = thumbRes.ok;
+                  }
+                }
+              } catch {
+                // ignore — thumbnail is best-effort
+              }
+            }
+
+            return { fileId: u.fileId, sha256, thumbnailUploaded, durationSeconds };
+          }
+        )
       );
 
       const finalizeRes = await fetch('/api/drop/finalize', {
@@ -118,7 +141,6 @@ export default function DropPage() {
         <UpgradeCard />
       </div>
     );
-
   }
 
   return (

@@ -4,7 +4,7 @@ import db from '@/lib/db';
 import { getStandingCodeByCode } from '@/lib/standingCodes';
 import { verifyPin } from '@/lib/pin';
 import { normalizeCode } from '@/lib/code';
-import { readFile } from '@/lib/storage';
+import { readFile, getDownloadUrl } from '@/lib/storage';
 import { checkRateLimit } from '@/lib/rateLimit';
 
 export async function GET(req: NextRequest) {
@@ -36,6 +36,13 @@ export async function GET(req: NextRequest) {
     .get(fileId, standing.id) as any;
 
   if (!file) return NextResponse.json({ error: 'File not found' }, { status: 404 });
+
+  const directUrl = await getDownloadUrl(file.storage_path, file.original_name);
+  if (directUrl) {
+    const res = NextResponse.redirect(directUrl, { status: 302 });
+    res.headers.set('X-Checksum-SHA256', file.sha256);
+    return res;
+  }
 
   const buffer = await readFile(file.storage_path);
   const verifySha256 = crypto.createHash('sha256').update(buffer).digest('hex');

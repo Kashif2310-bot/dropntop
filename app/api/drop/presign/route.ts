@@ -5,19 +5,21 @@ import { generateCode } from '@/lib/code';
 import { getUploadUrl, isDirectUploadSupported } from '@/lib/storage';
 import { checkStorageQuota } from '@/lib/storageQuota';
 
-const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200MB free-tier ceiling (matches /api/drop)
+const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024; // 2GB per file — this is the direct-to-R2
+// path (browser -> R2 straight, never through this server), so a large file
+// costs Railway nothing but a small JSON request either way. The old 200MB
+// number stays on the legacy buffered /api/drop route (server-buffered, only
+// used for local dev / note-only drops), which genuinely cannot handle files
+// this large without exhausting server memory.
 const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24h
 const MAX_RETRIEVALS_CAP = 50;
+const UPLOAD_URL_EXPIRY_SECONDS = 60 * 60; // 1h — a 2GB upload on a slow connection
+// can take a while; the previous 15-minute default was tuned for small files.
 
-// Step 1 of the direct-to-R2 upload flow (see lib/storage.ts#getUploadUrl for
-// why this exists — it's what makes uploads fast instead of routing every
-// byte through Railway twice). The browser calls this FIRST with just file
-// metadata (name/size/type, no bytes), gets back a presigned URL per file,
-// PUTs each file straight to R2, then calls /api/drop/finalize to confirm.
-//
-// When R2 isn't configured (local dev without R2_* env vars), this responds
-// with direct:false and no uploads — the client falls back to the old
-// buffered POST /api/drop flow, so local dev keeps working unchanged.
+function isPreviewable(mimeType: string): boolean {
+  return mimeType.startsWith('image/') || mimeType.startsWith('video/');
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -34,7 +36,7 @@ export async function POST(req: NextRequest) {
     for (const f of filesMeta) {
       if (f.size > MAX_FILE_BYTES) {
         return NextResponse.json(
-          { error: `${f.name} is over the 200MB free-tier limit` },
+          { error: `${f.name} is over the 2GB per-file limit` },
           { status: 413 }
         );
       }
@@ -46,9 +48,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: quota.error }, { status: 507 });
     }
 
-    // If R2 isn't configured (local dev), or this is a note-only drop with
-    // nothing to presign, bail out with direct:false before creating any DB
-    // rows — the client's fallback path (POST /api/drop) handles both cases.
     if (filesMeta.length === 0 || !isDirectUploadSupported()) {
       return NextResponse.json({ direct: false });
     }
@@ -67,14 +66,19 @@ export async function POST(req: NextRequest) {
     for (const f of filesMeta) {
       const fileId = crypto.randomUUID();
       const key = `${dropId}__${fileId}`;
-      const uploadUrl = await getUploadUrl(key);
+      const uploadUrl = await getUploadUrl(key, UPLOAD_URL_EXPIRY_SECONDS);
+
+      const mimeType = f.type || 'application/octet-stream';
+      const previewable = isPreviewable(mimeType);
+      const thumbKey = previewable ? `${key}__thumb` : null;
+      const thumbnailUploadUrl = thumbKey ? await getUploadUrl(thumbKey, UPLOAD_URL_EXPIRY_SECONDS) : null;
 
       db.prepare(
-        `INSERT INTO files (id, drop_id, original_name, mime_type, size_bytes, sha256, storage_path, confirmed)
-         VALUES (?, ?, ?, ?, ?, '', ?, 0)`
-      ).run(fileId, dropId, f.name, f.type || 'application/octet-stream', f.size, key);
+        `INSERT INTO files (id, drop_id, original_name, mime_type, size_bytes, sha256, storage_path, confirmed, thumbnail_path, has_thumbnail)
+         VALUES (?, ?, ?, ?, ?, '', ?, 0, ?, 0)`
+      ).run(fileId, dropId, f.name, mimeType, f.size, key, thumbKey);
 
-      uploads.push({ fileId, uploadUrl, key });
+      uploads.push({ fileId, uploadUrl, key, thumbnailUploadUrl });
     }
 
     return NextResponse.json({

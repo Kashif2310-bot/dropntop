@@ -3,9 +3,6 @@ import db from '@/lib/db';
 import { normalizeCode } from '@/lib/code';
 import { checkRateLimit } from '@/lib/rateLimit';
 
-// Looks up a code and returns drop metadata + file list. Does NOT consume a
-// retrieval slot — that only happens when a specific file is downloaded
-// (see /api/retrieve/[code]/[fileId]), so browsing what's in a drop is free.
 export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for') || 'unknown';
   const rl = checkRateLimit(`lookup:${ip}`);
@@ -38,7 +35,10 @@ export async function POST(req: NextRequest) {
   }
 
   const files = db
-    .prepare('SELECT id, original_name, mime_type, size_bytes FROM files WHERE drop_id = ?')
+    .prepare(
+      `SELECT id, original_name, mime_type, size_bytes, has_thumbnail, duration_seconds
+       FROM files WHERE drop_id = ?`
+    )
     .all(drop.id);
 
   return NextResponse.json({
