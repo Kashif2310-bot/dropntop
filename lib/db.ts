@@ -10,6 +10,7 @@ db.pragma('journal_mode = WAL');
 // Required for ON DELETE CASCADE / ON DELETE SET NULL below to actually fire —
 // SQLite ignores foreign-key actions entirely unless this is set per connection.
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS drops (
