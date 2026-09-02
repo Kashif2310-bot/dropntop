@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
     recordUsage(hashDeviceGlobal(deviceId), 'retrieve');
   }
 
-  const buffer = readFile(file.storage_path);
+  const buffer = await readFile(file.storage_path);
   const verifySha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
   const res = new NextResponse(new Uint8Array(buffer), {

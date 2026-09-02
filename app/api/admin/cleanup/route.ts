@@ -13,6 +13,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const result = purgeExpired();
+  const result = await purgeExpired();
   return NextResponse.json(result);
 }

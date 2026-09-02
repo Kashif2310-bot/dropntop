@@ -17,20 +17,83 @@ export default function DropPage() {
     setFiles(Array.from(list));
   }
 
+  // Computes SHA-256 in the browser (Web Crypto) — needed because on the
+  // direct-to-R2 path (see below) this server never sees the raw bytes, so
+  // it can't compute the checksum itself the way the old buffered path did.
+  async function sha256Hex(file: File): Promise<string> {
+    const buf = await file.arrayBuffer();
+    const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hashBuf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  async function handleSubmitLegacy() {
+    const fd = new FormData();
+    files.forEach((f) => fd.append('files', f));
+    if (note) fd.append('note', note);
+    fd.append('maxRetrievals', String(maxRetrievals));
+    fd.append('vertical', 'general');
+
+    const res = await fetch('/api/drop', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    setResult(data);
+  }
+
   async function handleSubmit() {
     setError('');
     setLoading(true);
     try {
-      const fd = new FormData();
-      files.forEach((f) => fd.append('files', f));
-      if (note) fd.append('note', note);
-      fd.append('maxRetrievals', String(maxRetrievals));
-      fd.append('vertical', 'general');
+      // Try the direct-to-R2 path first — the browser uploads straight to
+      // Cloudflare, skipping the slow browser->Railway->R2 double hop. Falls
+      // back automatically to the old server-buffered path (handleSubmitLegacy)
+      // when R2 isn't configured, e.g. local dev, or for note-only drops.
+      const presignRes = await fetch('/api/drop/presign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
+          note: note || undefined,
+          maxRetrievals: String(maxRetrievals),
+          vertical: 'general',
+        }),
+      });
+      const presignData = await presignRes.json();
+      if (!presignRes.ok) throw new Error(presignData.error || 'Something went wrong');
 
-      const res = await fetch('/api/drop', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Something went wrong');
-      setResult(data);
+      if (!presignData.direct) {
+        await handleSubmitLegacy();
+        return;
+      }
+
+      // Upload every file straight to R2, in parallel, hashing each one as
+      // we go so we have the checksum ready for finalize.
+      const finalizeFiles = await Promise.all(
+        presignData.uploads.map(async (u: { fileId: string; uploadUrl: string }, i: number) => {
+          const file = files[i];
+          const [sha256, putRes] = await Promise.all([
+            sha256Hex(file),
+            fetch(u.uploadUrl, { method: 'PUT', body: file }),
+          ]);
+          if (!putRes.ok) throw new Error(`Upload failed for ${file.name}`);
+          return { fileId: u.fileId, sha256 };
+        })
+      );
+
+      const finalizeRes = await fetch('/api/drop/finalize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dropId: presignData.dropId, files: finalizeFiles }),
+      });
+      const finalizeData = await finalizeRes.json();
+      if (!finalizeRes.ok) throw new Error(finalizeData.error || 'Something went wrong finishing your drop');
+
+      setResult({
+        code: presignData.code,
+        expiresAt: presignData.expiresAt,
+        maxRetrievals: presignData.maxRetrievals,
+      });
     } catch (e: any) {
       setError(e.message);
     } finally {

@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
 
   if (!file) return NextResponse.json({ error: 'File not found' }, { status: 404 });
 
-  const buffer = readFile(file.storage_path);
+  const buffer = await readFile(file.storage_path);
   const verifySha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
   return new NextResponse(new Uint8Array(buffer), {
