@@ -4,6 +4,7 @@ import db from '@/lib/db';
 import { generateCode, normalizeCode } from '@/lib/code';
 import { saveFile } from '@/lib/storage';
 import { getStandingCodeByCode } from '@/lib/standingCodes';
+import { checkStorageQuota } from '@/lib/storageQuota';
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const SUBMISSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — owner has time to collect it
@@ -30,6 +31,12 @@ export async function POST(req: NextRequest) {
       if (f.size > MAX_FILE_BYTES) {
         return NextResponse.json({ error: `${f.name} is over the 200MB limit` }, { status: 413 });
       }
+    }
+
+    const incomingBytes = files.reduce((sum, f) => sum + f.size, 0);
+    const quota = checkStorageQuota(incomingBytes);
+    if (!quota.ok) {
+      return NextResponse.json({ error: quota.error }, { status: 507 });
     }
 
     const dropId = crypto.randomUUID();

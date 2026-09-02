@@ -6,6 +6,7 @@ import { saveFile } from '@/lib/storage';
 import { compressImageToTarget } from '@/lib/examCompress';
 import { getOrCreateDeviceId, hashDeviceGlobal, DEVICE_COOKIE_NAME } from '@/lib/device';
 import { recordUsage } from '@/lib/usage';
+import { checkStorageQuota } from '@/lib/storageQuota';
 
 const MAX_INPUT_BYTES = 25 * 1024 * 1024; // 25MB in is plenty for a phone photo
 const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -43,6 +44,11 @@ export async function POST(req: NextRequest) {
       inputBuffer,
       targetKB * 1024
     );
+
+    const quota = checkStorageQuota(finalBytes);
+    if (!quota.ok) {
+      return NextResponse.json({ error: quota.error }, { status: 507 });
+    }
 
     const dropId = crypto.randomUUID();
     const code = generateCode();

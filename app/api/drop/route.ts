@@ -5,6 +5,7 @@ import { generateCode } from '@/lib/code';
 import { saveFile } from '@/lib/storage';
 import { getOrCreateDeviceId, hashDeviceGlobal, DEVICE_COOKIE_NAME } from '@/lib/device';
 import { recordUsage } from '@/lib/usage';
+import { checkStorageQuota } from '@/lib/storageQuota';
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200MB free-tier ceiling (MVP default)
 const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24h
@@ -30,6 +31,12 @@ export async function POST(req: NextRequest) {
           { status: 413 }
         );
       }
+    }
+
+    const incomingBytes = files.reduce((sum, f) => sum + f.size, 0);
+    const quota = checkStorageQuota(incomingBytes);
+    if (!quota.ok) {
+      return NextResponse.json({ error: quota.error }, { status: 507 });
     }
 
     const dropId = crypto.randomUUID();
