@@ -104,6 +104,14 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_subscriptions_device ON subscriptions(device_hash);
+
+CREATE TABLE IF NOT EXISTS pending_orders (
+  razorpay_order_id TEXT PRIMARY KEY,
+  device_hash TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  amount_paise INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
 
 // Idempotent migrations for databases created before these columns existed

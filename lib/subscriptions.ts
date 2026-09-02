@@ -12,6 +12,13 @@ export function isPro(deviceHash: string): boolean {
   return !!row;
 }
 
+export function isOrderActivated(razorpayOrderId: string): boolean {
+  const row = db
+    .prepare(`SELECT id FROM subscriptions WHERE razorpay_order_id = ? LIMIT 1`)
+    .get(razorpayOrderId);
+  return !!row;
+}
+
 export function activateSubscription(params: {
   deviceHash: string;
   plan: string;
@@ -19,6 +26,8 @@ export function activateSubscription(params: {
   razorpayPaymentId: string;
   amountPaise: number;
 }): void {
+  if (isOrderActivated(params.razorpayOrderId)) return;
+
   const now = Date.now();
   db.prepare(
     `INSERT INTO subscriptions (id, device_hash, plan, status, razorpay_order_id, razorpay_payment_id, amount_paise, started_at, expires_at)

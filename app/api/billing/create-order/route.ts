@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Razorpay from 'razorpay';
 import { getOrCreateDeviceId, hashDeviceGlobal, DEVICE_COOKIE_NAME } from '@/lib/device';
 import { getPlan } from '@/lib/razorpay';
+import { recordPendingOrder } from '@/lib/orders';
 
 // Requires RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in the environment (test
 // keys from the Razorpay dashboard while validating the flow, live keys once
@@ -32,6 +33,13 @@ export async function POST(req: NextRequest) {
       currency: 'INR',
       receipt: `${plan.id}_${Date.now()}`,
       notes: { deviceHash: hashDeviceGlobal(deviceId), plan: plan.id },
+    });
+
+    recordPendingOrder({
+      orderId: order.id,
+      deviceHash: hashDeviceGlobal(deviceId),
+      plan: plan.id,
+      amountPaise: plan.amountPaise,
     });
 
     const res = NextResponse.json({
