@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { getPendingOrder } from '@/lib/orders';
-import { activateSubscription, isOrderActivated } from '@/lib/subscriptions';
+import { activateSubscription } from '@/lib/subscriptions';
 
 // Server-to-server backstop for /api/billing/verify. Razorpay calls this
 // directly from their own servers the instant a payment is captured,
@@ -12,11 +12,6 @@ import { activateSubscription, isOrderActivated } from '@/lib/subscriptions';
 // webhook and the client-side verify call to race to activate the same
 // order — whichever arrives first wins, the other is a no-op.
 export async function POST(req: NextRequest) {
-  // TEMPORARY diagnostic line — confirms Razorpay's servers actually reached
-  // this endpoint at all, independent of whether the signature check below
-  // passes. Safe to remove once the webhook is confirmed working end to end.
-  console.log('[webhook] received a call from', req.headers.get('user-agent') || 'unknown');
-
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
   if (!webhookSecret) {
     console.error('RAZORPAY_WEBHOOK_SECRET is not set — refusing webhook call');
@@ -37,9 +32,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
   }
 
-  // TEMPORARY — confirms the signature check passed.
-  console.log('[webhook] signature verified OK');
-
   let event: any;
   try {
     event = JSON.parse(rawBody);
@@ -55,7 +47,6 @@ export async function POST(req: NextRequest) {
     if (orderId && paymentId) {
       const pending = getPendingOrder(orderId);
       if (pending) {
-        const alreadyActivated = isOrderActivated(orderId);
         activateSubscription({
           deviceHash: pending.deviceHash,
           plan: pending.plan,
@@ -63,14 +54,6 @@ export async function POST(req: NextRequest) {
           razorpayPaymentId: paymentId,
           amountPaise: pending.amountPaise,
         });
-        // TEMPORARY — says whether THIS call did the activating, or whether
-        // /api/billing/verify already beat it to it (both are fine outcomes;
-        // this is just to see which path actually did the work).
-        console.log(
-          `[webhook] payment.captured for order ${orderId}: ${
-            alreadyActivated ? 'already activated by verify call — no-op' : 'activated subscription (webhook was first)'
-          }`
-        );
       } else {
         console.error(`Webhook payment.captured for unknown order ${orderId}`);
       }
