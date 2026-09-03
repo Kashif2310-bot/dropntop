@@ -5,6 +5,9 @@ import { generateCode } from '@/lib/code';
 import { getUploadUrl, isDirectUploadSupported } from '@/lib/storage';
 import { checkStorageQuota } from '@/lib/storageQuota';
 
+const MAX_FILES_PER_DROP = 20; // matches app/drop/page.tsx's MAX_FILES — a
+// gallery grid past this stops being "browse and pick the good ones" and
+// starts being its own version of the WhatsApp clutter problem.
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024; // 2GB per file — this is the direct-to-R2
 // path (browser -> R2 straight, never through this server), so a large file
 // costs Railway nothing but a small JSON request either way. The old 200MB
@@ -31,6 +34,13 @@ export async function POST(req: NextRequest) {
 
     if (filesMeta.length === 0 && !note) {
       return NextResponse.json({ error: 'Attach at least one file or a note' }, { status: 400 });
+    }
+
+    if (filesMeta.length > MAX_FILES_PER_DROP) {
+      return NextResponse.json(
+        { error: `You can drop up to ${MAX_FILES_PER_DROP} files at a time` },
+        { status: 413 }
+      );
     }
 
     for (const f of filesMeta) {
